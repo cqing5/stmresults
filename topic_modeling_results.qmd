@@ -450,6 +450,7 @@ interact_plot(
 ```
 :::
 
+## Network Analysis
 ```{r}
 #| eval: false
 #| echo: false
