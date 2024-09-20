@@ -1,0 +1,479 @@
+---
+title: "Study 4 Structural Topic Modeling Results"
+author: "Catherine Qing"
+format: 
+  html:
+    toc: true
+    toc-location: left
+    number-sections: true
+    embed-resources: true
+date: "`r format(Sys.time())`"
+editor: visual
+execute: 
+  echo: false
+  warning: false
+  cache: true
+---
+
+```{r packages}
+#| include: false
+library(tidyverse)
+library(sjmisc)
+library(psych)
+library(haven)
+library(sjlabelled)
+library(broom)
+library(sjPlot)
+library(jtools)
+library(lavaan)
+library(janitor)
+library(gtsummary)
+library(lme4)
+library(afex)
+library(emmeans)
+library(ggplot2)
+library(psych)
+library(interactions)
+library(tidytext)
+library(ggsignif)
+```
+
+```{r}
+#| warning: false
+
+# sociodemographic data from prolific
+data_prolific_lib <- read_csv("data/prolific_export_662840a780ae970f72ed16f7_lib.csv")
+
+data_prolific_lib_2 <- read_csv("data/prolific_export_66390671eb13312b74776665_lib_2.csv")
+
+data_prolific_con <- read_csv("data/prolific_export_6618cbab3c734dd7e005e13e_con.csv")
+
+data_prolific_mod <- read_csv("data/prolific_export_6628403b568a146d3e4ea230_mod.csv")
+
+data_prolific_4  <-  bind_rows(data_prolific_lib,data_prolific_lib_2, data_prolific_con, data_prolific_mod)
+
+data_prolific_4 <- data_prolific_4 |> 
+  clean_names() 
+
+# add a suffix to all variables from prolific
+colnames(data_prolific_4) <- paste(colnames(data_prolific_4),"prolific", sep="_")
+
+# change name of id column to match the raw data from qualtrics and the prolific data
+colnames(data_prolific_4)[which(names(data_prolific_4) == "participant_id_prolific")] <- "prolific_id"
+
+# load qualtrics raw data
+data_raw_4 <- read_sav(file = "data/data_drp_study_4.sav")
+
+# merge qualtrics data and prolific data
+data_4 <- data_raw_4 |> 
+  left_join(data_prolific_4, by = "prolific_id") |> 
+  filter(status_prolific == "APPROVED") |> 
+  filter(!(check_foreclosure == 1 & check_affected > 1)) |> 
+  distinct(prolific_id, .keep_all = TRUE)
+```
+
+## Summary results
+
+```{r}
+data_4 <- data_4 |> 
+  rename(support = support_4,
+         wellbeing = wellbeing_4, 
+         donate_incentivized_init = donate_incentivized_1,
+         donate_incentivized_self = donate_incentivized_2,
+         warm_feelingtherm = warm_feelingtherm_1,
+         ) |> 
+  mutate(donate_incentivized_init = set_label(donate_incentivized_init, "donate money to init."),
+         donate_incentivized_self = set_label(donate_incentivized_self, "keep money to self"),
+         p_ideology_self = case_when(p_ideology_screener == 1 ~ "Conservative",
+                                  p_ideology_screener == 2 ~ "Moderate",
+                                  p_ideology_screener == 3 ~ "Liberal"),
+         p_ideology_self = factor(p_ideology_self, 
+                                  levels = c("Liberal", "Moderate", "Conservative")),
+        initiative = str_replace(initiative, "positive", "positive_sum"),
+        initiative = factor(initiative, levels = c("control", "positive_sum_norace", "positive_sum_race", "structural_norace", "structural_race"))) |> 
+  distinct(prolific_id, .keep_all = TRUE) # pay attention to the duplicates
+```
+
+```{r}
+palette_colors_2 = c("gray80", "#F0E442","#E69F00", "#56B4E9", "#0072B2")
+
+
+data_outcomes_4 <- data_4 |> 
+  select(p_ideology_self, initiative, 
+         support, wellbeing, 
+         donate_intention_likely, donate_intention_refer, 
+         donate_incentivized_init, donate_incentivized_self) |> 
+  pivot_longer(cols = support:donate_incentivized_self, 
+               names_to = "outcome", 
+               values_to = "score") |> 
+  mutate(outcome = factor(outcome, levels = c("support", "wellbeing",
+                                              "donate_intention_likely", "donate_intention_refer",
+                                              "donate_incentivized_init", "donate_incentivized_self")))
+
+data_outcomes_4 |> 
+  ggplot(aes(x = reorder_within(initiative, score, outcome), 
+             y = score, 
+             fill = initiative)) +
+  geom_bar(stat='summary', fun= "mean") + 
+  geom_errorbar(stat = "summary", width=.2) +   #geom_boxplot(width=0.5, color="grey", alpha=0.8) +
+  #stat_summary(fun = mean, geom = "point", shape = 20, size = 4, color = "red", fill= "red") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = palette_colors_2) +
+  labs(title = "Support for initiative", y = "", x = "") +
+  scale_x_reordered(guide = guide_axis(angle = 45)) +
+  facet_wrap(~ outcome, scales = "free", ncol = 3) 
+
+  
+```
+
+# Topic modeling {#sec-topic_model}
+
+```{r}
+data_4_text <- data_4 |> 
+  mutate(text = support_open) |> 
+  drop_na(text, initiative, p_ideology_self)
+```
+
+```{r text_processing}
+#| message: false
+#| warning: false
+#| include: false
+
+library(stm)
+
+set.seed(23456)
+
+# Pre-procesing the documents
+processed <- textProcessor(documents = data_4_text$text,
+                           metadata = data_4_text,
+                           stem = FALSE)
+
+# extracting documents, tokens, and metadata
+out <- prepDocuments(documents = processed$documents, 
+                     vocab = processed$vocab,
+                     meta = processed$meta)
+
+```
+
+```{r simulate_topics}
+#| eval: false
+#| echo: false
+
+# to identify the appropriate number of topics to extract
+# Note: run in advance since it is time consuming
+storage <- searchK(out$documents, 
+                   out$vocab, 
+                   K = c(3:30), 
+                   heldout.seed = 23456
+                   )
+
+save(storage, file = "data/storage_topics_3_30.Rdata")
+```
+
+```{r select_model}
+#| eval: false
+#| echo: false
+
+# load the object that contain the simulations
+load(file = "data/storage_topics_3_30.Rdata")
+
+# to visualize the performance of different models
+storage$results %>%
+    pivot_longer(cols = -K, names_to = "metric", values_to = "value") %>%
+    filter(metric %in% c("lbound", "exclus", "residual", "semcoh")) %>%
+    mutate(value = map_dbl(value, 1)) %>% 
+    mutate(K = map_dbl(K, 1)) %>% 
+    ggplot(aes(x = K, y = value, color = metric)) +
+    geom_point() + geom_line() +
+    guides(color = "none") +
+    facet_wrap(~metric, scales = "free") +
+    geom_vline(aes(xintercept = 20), color = "red") +
+    labs(y = NULL) +
+  theme_bw()
+
+# decide to select 20 topics, due to the exclusivity of terms and semantic coherence
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+model_20 <- stm(documents = out$documents, 
+                   vocab = out$vocab,
+                   K = 20,
+                   prevalence =~ initiative + p_ideology, 
+                   data = out$meta,
+                   init.type = "Spectral")
+
+save(model_20, file = "data/stm_20.Rdata")
+
+```
+
+```{r}
+load("data/stm_20.Rdata")
+
+model_20_gamma <- tidytext::tidy(model_20, matrix = "gamma") # per document per topic
+
+model_20_beta <- tidytext::tidy(model_20, matrix = "beta") # per term per topic
+
+model_20_gammawide <- model_20_gamma |> 
+  pivot_wider(names_from = topic, 
+              values_from = gamma,
+              names_glue = "topic_{topic}")
+```
+
+```{r}
+proportion <- model_20_gamma |> 
+  group_by(topic) |> 
+  summarize(gamma_mean = mean(gamma)) |> 
+  mutate(topic = paste0("topic_", topic))
+
+ggplot(proportion, aes(x = gamma_mean, y = reorder(topic, gamma_mean), fill = as.factor(topic))) +
+  geom_col() +
+  scale_fill_viridis_d() +
+  theme_bw() +
+  geom_vline(xintercept = 0.05, linetype = 2, color = "red") +
+  theme(legend.position = "none") +
+  labs(x = "Expected Topic Proportion in the documents")
+  
+```
+
+## Topics identified
+
+-   Eight popular topics:
+    -   **Fairness** **/ moral thing to do** (topic 19): strong sense that compensation or assistance is justified and deserved; unfairness of the situation is repeatedly emphasized; the compensation is seen as a fair resolution to an unjust situation
+    -   **Cautious support** **/** **skepticism** (topic 6): recognition of both potential benefits and limitations; recognition that the policy has good intentions but concerns about implementation, effectiveness, and funding
+    -   **Information deficit** (topic 5): uncertainty and a desire for more information about the program; "don't know enough"
+    -   **Beneficial / helpful** (topic 10): strong support for policies; belief that initiative will help alleviate financial stress and improve overall well-being for affected individuals.
+    -   **Community** (topic 14): respondents like that the initiative helps the community as a whole, families, and the collective
+    -   **Deservingness/equal rights** (topic 11): everyone deserves a home; housing/homeownership should be accessible and protected
+    -   **Structural issues/system failures** (topic 13): recognizing the structural inequalities embedded in housing policies and the need for initiatives that promote greater housing security and economic equality
+    -   **Band-aid solution** (topic 1): dissatisfaction with addressing only the symptoms of housing and foreclosure issues, rather than tackling the root cause
+
+## 
+
+::: panel-tabset
+## Words by topic
+
+```{r}
+model_20_beta |> 
+  group_by(topic) |> 
+  top_n(beta, n = 10) |> 
+  filter(beta >= .01) |> 
+  mutate(topic = as.factor(topic)) |> 
+  ggplot(aes(x = reorder_within(term, beta, topic),
+             y = beta, 
+             fill = topic)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  scale_fill_viridis_d() +
+  scale_x_reordered() +
+  facet_wrap(~ topic, scales = "free", ncol = 5) +
+  theme(legend.position = "none")
+```
+
+### Topic 19: Fairness
+
+```{r}
+result19 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 19)
+
+docs_19 <- do.call(rbind, lapply(result19$docs, function(x) {
+  data.frame(text = x)
+}))
+print(docs_19)
+```
+
+### Topic 6:
+
+```{r}
+result6 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 6)
+
+docs_6 <- do.call(rbind, lapply(result6$docs, function(x) {
+  data.frame(text = x)
+}))
+print(docs_6)
+```
+
+### Topic 5:
+
+```{r}
+result5 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 5)
+
+docs_5 <- do.call(rbind, lapply(result5$docs, function(x) {
+  data.frame(text = x)
+}))
+print(docs_5)
+```
+
+### Topic 10:
+
+```{r}
+result10 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 10)
+
+docs_10 <- do.call(rbind, lapply(result10$docs, function(x) {
+  data.frame(text = x)
+}))
+print(docs_10)
+```
+
+### Topic 14:
+
+```{r}
+result14 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 14)
+
+docs_14 <- do.call(rbind, lapply(result14$docs, function(x) {
+  data.frame(text = x)
+}))
+print(docs_14)
+```
+
+### Topic 11:
+
+    {r}
+    result11 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 11)
+
+    docs_11 <- do.call(rbind, lapply(result11$docs, function(x) {
+      data.frame(text = x)
+    }))
+    print(docs_11)
+
+### Topic 13:
+
+    {r}
+    result13 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 13)
+
+    docs_13 <- do.call(rbind, lapply(result13$docs, function(x) {
+      data.frame(text = x)
+    }))
+    print(docs_13)
+
+### Topic 1:
+
+    {r}
+    result1 <- stm::findThoughts(model_20, texts = out$meta$text, n = 20, topics = 1)
+
+    docs_1 <- do.call(rbind, lapply(result1$docs, function(x) {
+      data.frame(text = x)
+    }))
+    print(docs_1)
+:::
+
+## Topics correlates
+
+::: panel-tabset
+## Initiatives predicting the topics
+
+-   Positive sum-race (vs. control)...
+
+    -   Reduced the likelihood of mentioning: fairness, information deficit, structural issues
+
+    -   Increased the likelihood of mentioning: cautious support/skepticism, community, band-aid solution
+
+-   Positive sum-no race (vs. control) reduced the likelihood of mentioning that the policy is beneficial/helpful (topic 10)
+
+-   Both structural conditions (vs. control) increased likelihood of mentioning deservingness/equal rights (topic 11); stronger effect for structural no race
+
+    ```{r}
+    #| message: false
+    #| warning: false
+    predictors <- estimateEffect(c(19, 6, 5, 10, 14, 11, 13, 1) ~ initiative + p_ideology, 
+                           model_20,
+                           meta = out$meta, 
+                           uncertainty = "None"
+                           )
+
+    summary(predictors)
+
+    ```
+
+## Topics predicting initiative support {#sec-topic_predict}
+
+-   Initiative support was higher when people mentioned all topics
+
+```{r}
+data_reg <- bind_cols(model_20_gammawide, out$meta)
+
+
+mod_sup <- lm(support ~ topic_19 + topic_6 + topic_5 + topic_10 + topic_14 + topic_11 + topic_13 + topic_1, 
+              data = remove_all_labels(data_reg))
+
+mod_sup_int <- lm(support ~ topic_19 + topic_6 + topic_5*p_ideology + topic_10 + topic_14*p_ideology + topic_11 + topic_13*p_ideology + topic_1, 
+              data = remove_all_labels(data_reg))
+
+tab_model(mod_sup, mod_sup_int, 
+          pred.labels = c(topic_19 = "Fairness",
+                          topic_6 = "Community",
+                          topic_5 = "Information deficit",
+                          topic_10 = "Beneficial/helpful",
+                          topic_14 = "Community",
+                          topic_11 = "Deservingness",
+                          topic_13 = "Structural",
+                          topic_1 = "Band-aid solution",
+                          'p_ideology:topic_5' = "Information deficit x ideology",
+                          'p_ideology:topic_14' = "Community x ideology",
+                          'p_ideology:topic_13' = "Structural x ideology"
+                          )
+          )
+```
+
+## Topic predicting initiative support by ideology
+
+The more people mentioned community and structural issues, the more they supported the initiative, especially among conservatives.
+
+```{r}
+interact_plot(
+  mod_sup_int,
+  pred = "topic_14",
+  modx = "p_ideology",
+  modx.values = c(1:5),
+  colors = "Rainbow",
+  modx.labels = get_labels(data_4$p_ideology)
+) +
+  ylim(c(1, 5)) +
+  theme_bw() + 
+  labs(title = "Topic 14: Community")
+```
+
+```{r}
+interact_plot(
+  mod_sup_int,
+  pred = "topic_13",
+  modx = "p_ideology",
+  modx.values = c(1:5),
+  colors = "Rainbow",
+  modx.labels = get_labels(data_4$p_ideology)
+) +
+  ylim(c(1, 5)) +
+  theme_bw() + 
+  labs(title = "Topic 13: Structural Issues")
+```
+:::
+
+```{r}
+#| eval: false
+#| echo: false
+#| 
+ega_topic <- EGA(model_20_gammawide[,-1],
+                 plot.EGA = FALSE)
+
+size <-  proportion[c(1:5,7:17, 6, 20), "gamma_mean"]
+
+plot(ega_topic 
+     #node.size = size$gamma_mean*100
+     )
+```
+
+```{r}
+#| eval: false
+#| echo: false
+#network <- (model_20_gammawide, 
+                      #     default = "EBICglasso")
+
+network <- estimateNetwork(model_20_gammawide[,-1], 
+                           default = "pcor",
+                           threshold = "sig", 
+                           alpha = 0.05)
+
+plot(network)
+```
