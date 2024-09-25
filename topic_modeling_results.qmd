@@ -72,8 +72,6 @@ data_4 <- data_raw_4 |>
   distinct(prolific_id, .keep_all = TRUE)
 ```
 
-## Summary results
-
 ```{r}
 data_4 <- data_4 |> 
   rename(support = support_4,
@@ -92,39 +90,6 @@ data_4 <- data_4 |>
         initiative = str_replace(initiative, "positive", "positive_sum"),
         initiative = factor(initiative, levels = c("control", "positive_sum_norace", "positive_sum_race", "structural_norace", "structural_race"))) |> 
   distinct(prolific_id, .keep_all = TRUE) # pay attention to the duplicates
-```
-
-```{r}
-palette_colors_2 = c("gray80", "#F0E442","#E69F00", "#56B4E9", "#0072B2")
-
-
-data_outcomes_4 <- data_4 |> 
-  select(p_ideology_self, initiative, 
-         support, wellbeing, 
-         donate_intention_likely, donate_intention_refer, 
-         donate_incentivized_init, donate_incentivized_self) |> 
-  pivot_longer(cols = support:donate_incentivized_self, 
-               names_to = "outcome", 
-               values_to = "score") |> 
-  mutate(outcome = factor(outcome, levels = c("support", "wellbeing",
-                                              "donate_intention_likely", "donate_intention_refer",
-                                              "donate_incentivized_init", "donate_incentivized_self")))
-
-data_outcomes_4 |> 
-  ggplot(aes(x = reorder_within(initiative, score, outcome), 
-             y = score, 
-             fill = initiative)) +
-  geom_bar(stat='summary', fun= "mean") + 
-  geom_errorbar(stat = "summary", width=.2) +   #geom_boxplot(width=0.5, color="grey", alpha=0.8) +
-  #stat_summary(fun = mean, geom = "point", shape = 20, size = 4, color = "red", fill= "red") +
-  theme_bw() +
-  theme(legend.position = "none") +
-  scale_fill_manual(values = palette_colors_2) +
-  labs(title = "Support for initiative", y = "", x = "") +
-  scale_x_reordered(guide = guide_axis(angle = 45)) +
-  facet_wrap(~ outcome, scales = "free", ncol = 3) 
-
-  
 ```
 
 # Topic modeling {#sec-topic_model}
